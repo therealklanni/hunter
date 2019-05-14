@@ -21,6 +21,10 @@ extern crate parse_ansi;
 extern crate signal_notify;
 extern crate tree_magic;
 extern crate systemstat;
+extern crate image;
+extern crate gstreamer;
+extern crate gstreamer_app;
+
 extern crate osstrtools;
 extern crate pathbuftools;
 extern crate async_value;
@@ -51,6 +55,8 @@ mod fscache;
 mod config;
 mod stats;
 mod icon;
+mod imgview;
+mod videoview;
 
 
 

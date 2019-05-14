@@ -32,6 +32,9 @@ systemstat = "0.1.4"
 osstrtools = "0.1"
 pathbuftools = "0.1"
 async_value = "0.2.2"
+image = "0.21.1"
+gstreamer = "0.11.2"
+gstreamer-app = "0.11.2"
 
 
 # These options increase performance and generate a smaller binary

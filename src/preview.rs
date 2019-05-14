@@ -6,6 +6,8 @@ use crate::files::{File, Files, Kind};
 use crate::fscache::FsCache;
 use crate::listview::ListView;
 use crate::textview::TextView;
+use crate::imgview::ImgView;
+use crate::videoview::VideoView;
 use crate::widget::{Widget, WidgetCore};
 use crate::coordinates::Coordinates;
 use crate::fail::{HResult, HError, ErrorLog};
@@ -187,7 +189,8 @@ impl PartialEq for Previewer {
 #[derive(PartialEq)]
 enum PreviewWidget {
     FileList(ListView<Files>),
-    TextView(TextView)
+    TextView(TextView),
+    ImgView(VideoView),
 }
 
 
@@ -330,6 +333,19 @@ impl Previewer {
                                                &stale,
                                                &animator)?);
             }
+
+            // if file.path.extension() == Some(&std::ffi::OsString::from("png")) ||
+            //    file.path.extension() == Some(&std::ffi::OsString::from("jpg")) {
+            //     let imgview = ImgView::new_from_file(core.clone(), &file.path);
+            //     return Ok(PreviewWidget::ImgView(imgview))
+            //    }
+
+            if file.path.extension() == Some(&std::ffi::OsString::from("mkv")) {
+                let videoview = VideoView::new_from_file(core.clone(), &file.path);
+                return Ok(PreviewWidget::ImgView(videoview))
+            }
+
+
 
             let preview = Previewer::preview_external(&file,
                                                       &core,
@@ -493,31 +509,36 @@ impl Widget for PreviewWidget {
     fn get_core(&self) -> HResult<&WidgetCore> {
         match self {
             PreviewWidget::FileList(widget) => widget.get_core(),
-            PreviewWidget::TextView(widget) => widget.get_core()
+            PreviewWidget::TextView(widget) => widget.get_core(),
+            PreviewWidget::ImgView(widget) => widget.get_core()
         }
     }
     fn get_core_mut(&mut self) -> HResult<&mut WidgetCore> {
         match self {
             PreviewWidget::FileList(widget) => widget.get_core_mut(),
-            PreviewWidget::TextView(widget) => widget.get_core_mut()
+            PreviewWidget::TextView(widget) => widget.get_core_mut(),
+            PreviewWidget::ImgView(widget) => widget.get_core_mut()
         }
     }
     fn set_coordinates(&mut self, coordinates: &Coordinates) -> HResult<()> {
         match self {
             PreviewWidget::FileList(widget) => widget.set_coordinates(coordinates),
             PreviewWidget::TextView(widget) => widget.set_coordinates(coordinates),
+            PreviewWidget::ImgView(widget) => widget.set_coordinates(coordinates),
         }
     }
     fn refresh(&mut self) -> HResult<()> {
         match self {
             PreviewWidget::FileList(widget) => widget.refresh(),
-            PreviewWidget::TextView(widget) => widget.refresh()
+            PreviewWidget::TextView(widget) => widget.refresh(),
+            PreviewWidget::ImgView(widget) => widget.refresh()
         }
     }
     fn get_drawlist(&self) -> HResult<String> {
         match self {
             PreviewWidget::FileList(widget) => widget.get_drawlist(),
-            PreviewWidget::TextView(widget) => widget.get_drawlist()
+            PreviewWidget::TextView(widget) => widget.get_drawlist(),
+            PreviewWidget::ImgView(widget) => widget.get_drawlist()
         }
     }
 }
