@@ -57,7 +57,13 @@ impl<W: Widget + Send + 'static> AsyncWidget<W> {
         let sender = Arc::new(Mutex::new(core.get_sender()));
         let mut widget = Async::new(move |stale|
                                     closure(stale).map_err(|e| e.into()));
-        widget.on_ready(move |_, _| {
+        widget.on_ready(move |mut w, stale| {
+            if !stale.is_stale()? {
+                w.as_mut().map(|w| {
+                    w.refresh();
+                    w.draw();
+                });
+            }
             sender.lock().map(|s| s.send(crate::widget::Events::WidgetReady)).ok();
             Ok(())
         }).log();
@@ -82,7 +88,13 @@ impl<W: Widget + Send + 'static> AsyncWidget<W> {
             Ok(closure(stale, core.clone())?)
         });
 
-        widget.on_ready(move |_, _| {
+        widget.on_ready(move |mut w, stale| {
+            if !stale.is_stale()? {
+                w.as_mut().map(|w| {
+                    w.refresh();
+                    w.draw();
+                });
+            }
             sender.lock().map(|s| s.send(crate::widget::Events::WidgetReady)).ok();
             Ok(())
         }).log();
@@ -340,7 +352,7 @@ impl Previewer {
             //     return Ok(PreviewWidget::ImgView(imgview))
             //    }
 
-            if file.path.extension() == Some(&std::ffi::OsString::from("mkv")) {
+            if file.path.extension() == Some(&std::ffi::OsString::from("webm")) {
                 let videoview = VideoView::new_from_file(core.clone(), &file.path);
                 return Ok(PreviewWidget::ImgView(videoview))
             }

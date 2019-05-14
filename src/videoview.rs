@@ -15,6 +15,9 @@ use crate::imgview::ImgView;
 
 use std::path::Path;
 use std::sync::{Arc, Mutex};
+use std::process::{Child, Command, Stdio};
+use std::sync::mpsc::{Receiver, Sender, channel};
+use std::io::BufRead;
 
 impl std::cmp::PartialEq for VideoView {
     fn eq(&self, other: &Self) -> bool {
@@ -24,104 +27,68 @@ impl std::cmp::PartialEq for VideoView {
 
 pub struct VideoView {
     core: WidgetCore,
-    imgview: Arc<Mutex<ImgView>>,
-    raw: DynamicImage,
-    player: gstreamer::Element
+    buffer: String,
+    //imgview: ImgView,
+    //raw: DynamicImage,
+    // player: Child,
+    frame_receiver: Receiver<String>,
 }
 
 impl VideoView {
     pub fn new_from_file(core: WidgetCore, file: &Path) -> VideoView {
+        let (tx, rx) = channel();
+        let corecl = core.clone();
+        let file = file.to_path_buf();
+        std::thread::spawn(move || {
+            let core = corecl;
+            let (xsize, ysize) = core.coordinates.size_u();
 
-        gstreamer::init().unwrap();
+            let mut player = std::process::Command::new("termplay")
+                .arg("-q")
+                .arg("-w")
+                .arg(format!("{}", xsize+1))
+                .arg("-h")
+                .arg(format!("{}", ysize*2))
+                .arg(file.to_string_lossy().to_string())
+                .stdin(Stdio::inherit())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::inherit())
+                .spawn();
 
-        let source = gstreamer::ElementFactory::make("playbin", None)
-        //.ok_or(VideoError::GstreamerCreationError("playbin"))?;
-            .unwrap();
-        let videorate = gstreamer::ElementFactory::make("videorate", None)
-        // .ok_or(VideoError::GstreamerCreationError("videorate"))?;
-            .unwrap();
-        let pnmenc = gstreamer::ElementFactory::make("pnmenc", None)
-        // .ok_or(VideoError::GstreamerCreationError("pnmenc"))?;
-            .unwrap();
-        let sink = gstreamer::ElementFactory::make("appsink", None)
-        // .ok_or(VideoError::GstreamerCreationError("appsink"))?;
-            .unwrap();
-        let appsink = sink.clone()
-            .downcast::<gstreamer_app::AppSink>()
-            .unwrap();
+            let stdout = player.unwrap().stdout.unwrap();
+            let stdout = std::io::BufReader::new(stdout);
 
-        videorate.set_property("max-rate", &(30 as i32)).unwrap();
+            let mut frame = String::new();
+            for line in stdout.lines() {
 
-        let elems = &[&videorate, &pnmenc, &sink];
+                if line.as_ref().ok() == Some(String::from("\x1b[0m")).as_ref() {
+                    dbg!("line");
+                    let full_frame = frame.clone();
 
-        let bin = gstreamer::Bin::new(None);
-        bin.add_many(elems).unwrap();
-        gstreamer::Element::link_many(elems).unwrap();
+                    let mut img = ImgView {
+                        core: core.clone(),
+                        buffer: full_frame.lines().map(|l| l.to_string()).collect()
+                    };
+                    img.draw();
 
-        // make input for bin point to first element
-        let sink = elems[0].get_static_pad("sink").unwrap();
-        let ghost = gstreamer::GhostPad::new("sink", &sink)
-        // .ok_or(VideoError::GstCreationError("ghost pad"))?;
-            .unwrap();
-        ghost.set_active(true).unwrap();
-        bin.add_pad(&ghost).unwrap();
-
-        let uri = format!("file://{}", &file.to_string_lossy().to_string());
-
-        let imgview = ImgView {
-            core: core.clone(),
-            buffer: vec![],
-            raw: DynamicImage::new_rgb8(0,0)
-        };
-
-        let imgview = Arc::new(Mutex::new(imgview));
-        let imgview2 = imgview.clone();
-
-        source.set_property("uri", &uri);
-        source.set_property("video-sink", &bin.upcast::<gstreamer::Element>()).unwrap();
-
-        appsink.set_callbacks(
-            gstreamer_app::AppSinkCallbacks::new()
-                .new_sample({
-                    // let stdout = Arc::clone(&stdout);
-                    // let zoomer = Arc::clone(&zoomer);
-                    move |sink| {
-                        dbg!("got sample");
-                        let sample = match sink.pull_sample() {
-                            Some(sample) => sample,
-                            None => return gstreamer::FlowReturn::Eos,
-                        };
-
-                        let img = image_from_sample(&sample);
-                        img.map(|img| {
-                            imgview2.lock().map(|mut view| {
-                                view.set_raw_img(img);
-                                view.draw();
-                            }).ok();
-                        });
-
-                        // let mut stdout = stdout.lock().unwrap();
-                        // let zoomer = zoomer.lock().unwrap();
-                        // match clone.image_from_sample(&sample) {
-                        //     Some(mut image) => {
-                        //         //clone.display_image(&mut *stdout, &zoomer, &mut image);
-                        //         gstreamer::FlowReturn::Ok
-                        //     },
-                        //     None => gstreamer::FlowReturn::Error
-                        // }
-                        gstreamer::FlowReturn::Ok
+                    // tx.send(full_frame);
+                    // core.get_sender().send(crate::widget::Events::WidgetReady);
+                    frame.clear();
+                } else {
+                    if let Ok(line) = line {
+                        frame += &line;
                     }
-                })
-                .build()
-        );
-
-        source.set_state(gstreamer::State::Playing).into_result().unwrap();
+                }
+            }
+        });
 
         VideoView {
             core: core.clone(),
-            imgview: imgview,
-            raw: DynamicImage::new_rgb8(0, 0),
-            player: source
+            buffer: String::new(),
+            //imgview: imgview,
+            //raw: DynamicImage::new_rgb8(0, 0),
+            // player: source
+            frame_receiver: rx
         }
     }
 }
@@ -144,17 +111,24 @@ impl Widget for VideoView {
     }
 
     fn refresh(&mut self) -> HResult<()> {
+        dbg!("refresh");
+        // let frame = self.frame_receiver.recv()?;
 
+        // self.buffer = frame;
         Ok(())
     }
 
     fn get_drawlist(&self) -> HResult<String> {
-        self.imgview.lock()?.get_drawlist()
+        let img = ImgView {
+            core: self.core.clone(),
+            buffer: self.buffer.lines().map(|l| l.to_string()).collect()
+        };
+        img.get_drawlist()
     }
 }
 
 impl Drop for VideoView {
     fn drop(&mut self) {
-        self.player.set_state(gstreamer::State::Null).into_result().unwrap();
+        //self.player.set_state(gstreamer::State::Null).into_result().unwrap();
     }
 }

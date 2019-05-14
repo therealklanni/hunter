@@ -21,78 +21,94 @@ impl std::cmp::PartialEq for ImgView {
 pub struct ImgView {
     pub core: WidgetCore,
     pub buffer: Vec<String>,
-    pub raw: DynamicImage
+    //pub raw: DynamicImage
 }
 
 impl ImgView {
     pub fn new_from_file(core: WidgetCore, file: &Path) -> ImgView {
-        let img = image::open(&file)
-            .unwrap();
+        //let img = image::open(&file)
+        //.unwrap();
+        let (xsize, ysize) = core.coordinates.size_u();
+
+        let output = std::process::Command::new("termplay")
+            .arg("-q")
+            .arg("-w")
+            .arg(format!("{}", xsize+1))
+            .arg("-h")
+            .arg(format!("{}", ysize*2))
+            .arg(file.to_string_lossy().to_string())
+            .output()
+            .unwrap()
+            .stdout;
+
+        let output = std::str::from_utf8(&output).unwrap();
+        let output = output.lines().map(|l| l.to_string()).collect();
 
         ImgView {
             core: core,
-            buffer: vec![],
-            raw: img
+            buffer: output,
+            //raw: img
         }
     }
 
     pub fn render(&mut self) {
-        let (xsize, ysize) = self.max_size();
+        // let (xsize, ysize) = self.max_size();
 
-        let img = self.raw
-            .resize_exact(xsize as u32,
-                          ysize as u32,
-                          FilterType::Nearest)
-            .to_rgba();
+        // let img = self.raw
+        //     .resize_exact(xsize as u32,
+        //                   ysize as u32,
+        //                   FilterType::Nearest)
+        //     .to_rgba();
 
 
-        let rows = img.pixels()
-            .collect::<Vec<_>>()
-            .chunks(xsize as usize)
-            .map(|line| line.to_vec())
-            .collect::<Vec<Vec<_>>>();
+        // let rows = img.pixels()
+        //     .collect::<Vec<_>>()
+        //     .chunks(xsize as usize)
+        //     .map(|line| line.to_vec())
+        //     .collect::<Vec<Vec<_>>>();
 
-        let buffer = rows
-            .chunks(2)
-            .map(|rows| {
-                rows[0]
-                    .iter()
-                    .zip(rows[1].iter())
-                    .map(|(upper, lower)| {
-                        let upper_color = upper.to_rgb();
-                        let lower_color = lower.to_rgb();
+        // let buffer = rows
+        //     .chunks(2)
+        //     .map(|rows| {
+        //         rows[0]
+        //             .iter()
+        //             .zip(rows[1].iter())
+        //             .map(|(upper, lower)| {
+        //                 let upper_color = upper.to_rgb();
+        //                 let lower_color = lower.to_rgb();
 
-                        format!("{}{}▀",
-                                Fg(Rgb(upper_color[0], upper_color[1], upper_color[2])),
-                                Bg(Rgb(lower_color[0], lower_color[1], lower_color[2])))
-                    }).collect()
+        //                 format!("{}{}▀",
+        //                         Fg(Rgb(upper_color[0], upper_color[1], upper_color[2])),
+        //                         Bg(Rgb(lower_color[0], lower_color[1], lower_color[2])))
+        //             }).collect()
 
-            }).collect();
+        //     }).collect();
 
-        self.buffer = buffer;
+        // self.buffer = buffer;
     }
 
-    pub fn max_size(&self) -> (u32, u32) {
-        let (xsize, _) = self.core.coordinates.size_u();
-        let img_xsize = self.raw.width();
-        let img_ysize = self.raw.height();
-        let img_ratio = img_xsize as f32 / img_ysize as f32;
+    pub fn max_size(&self) // -> (u32, u32)
+    {
+        // let (xsize, _) = self.core.coordinates.size_u();
+        // let img_xsize = self.raw.width();
+        // let img_ysize = self.raw.height();
+        // let img_ratio = img_xsize as f32 / img_ysize as f32;
 
-        let mut new_y = if img_ratio < 1 as f32 {
-            (xsize+1) as f32 * img_ratio
-        } else {
-            (xsize+1) as f32 / img_ratio
-        };
-        if new_y as u32 % 2 == 1 {
-            new_y += 1 as f32;
-        }
-        ((xsize+1) as u32, new_y as u32)
+        // let mut new_y = if img_ratio < 1 as f32 {
+        //     (xsize+1) as f32 * img_ratio
+        // } else {
+        //     (xsize+1) as f32 / img_ratio
+        // };
+        // if new_y as u32 % 2 == 1 {
+        //     new_y += 1 as f32;
+        // }
+        // ((xsize+1) as u32, new_y as u32)
     }
 
     pub fn set_raw_img(&mut self, img: DynamicImage) {
-        self.raw = img;
-        self.render();
-        self.draw().log();
+        // self.raw = img;
+        // self.render();
+        // self.draw().log();
     }
 }
 
