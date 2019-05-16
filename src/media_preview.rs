@@ -160,8 +160,9 @@ fn video_preview(path: &String,
     let seek_time = gstreamer::ClockTime::from_seconds(5);
 
     for key in std::io::stdin().keys() {
+        dbg!(&key);
         match key {
-            Ok(Key::Char('q')) => break,
+            Ok(Key::Char('q')) => std::process::exit(0),
             Ok(Key::Char('>')) => {
                 if let Some(mut time) = player.query_position::<gstreamer::ClockTime>() {
                     time += seek_time;
