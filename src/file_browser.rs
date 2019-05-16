@@ -1195,6 +1195,22 @@ impl FileBrowser {
 
         Ok(status)
     }
+
+    pub fn media_seek_forward(&self) -> HResult<()> {
+        self.preview_widget()?.media_seek_forward()
+    }
+
+    pub fn media_seek_backward(&self) -> HResult<()> {
+        self.preview_widget()?.media_seek_backward()
+    }
+
+    pub fn media_toggle_pause(&mut self) -> HResult<()> {
+        self.preview_widget_mut()?.media_toggle_pause()
+    }
+
+    pub fn media_toggle_mute(&mut self) -> HResult<()> {
+        self.preview_widget_mut()?.media_toggle_mute()
+    }
 }
 
 impl Widget for FileBrowser {
@@ -1280,6 +1296,10 @@ impl Widget for FileBrowser {
             Key::Char('l') => self.show_log()?,
             Key::Char('z') => self.run_subshell()?,
             Key::Char('c') => self.toggle_colums(),
+            Key::Alt('>') => self.media_seek_forward()?,
+            Key::Alt('<') => self.media_seek_backward()?,
+            Key::Alt('m') => self.media_toggle_pause()?,
+            Key::Alt('M') => self.media_toggle_mute()?,
             _ => { self.main_widget_mut()?.on_key(key)?; },
         }
         if !self.columns.zoom_active { self.update_preview().log(); }

@@ -97,6 +97,8 @@ pub enum HError {
     ConfigLineError(String),
     #[fail(display = "New input in Minibuffer")]
     MiniBufferInputUpdated(String),
+    #[fail(display = "Failed to parse into UTF8")]
+    UTF8ParseError(std::str::Utf8Error)
 }
 
 impl HError {
@@ -305,6 +307,13 @@ impl From<async_value::AError> for HError {
     fn from(error: async_value::AError) -> Self {
         let err = HError::AError(error,
                                  Backtrace::new_arced());
+        err
+    }
+}
+
+impl From<std::str::Utf8Error> for HError {
+    fn from(error: std::str::Utf8Error) -> Self {
+        let err = HError::UTF8ParseError(error);
         err
     }
 }

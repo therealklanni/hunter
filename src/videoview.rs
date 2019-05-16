@@ -1,23 +1,15 @@
-use image;
-use image::Pixel;
-use image::FilterType;
-use image::DynamicImage;
-use image::GenericImageView;
+use lazy_static;
 
-use termion::color::{Bg, Fg, Rgb};
-
-use gstreamer::{self, prelude::*};
-use gstreamer_app;
 
 use crate::widget::{Widget, WidgetCore};
-use crate::fail::{HResult, ErrorLog};
+use crate::fail::{HResult, HError, ErrorLog};
 use crate::imgview::ImgView;
 
-use std::path::Path;
-use std::sync::{Arc, Mutex};
-use std::process::{Child, Command, Stdio};
-use std::sync::mpsc::{Receiver, Sender, channel};
-use std::io::BufRead;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, RwLock,
+                mpsc::{channel, Sender}};
+
+use std::io::{BufRead, BufReader, Write};
 
 impl std::cmp::PartialEq for VideoView {
     fn eq(&self, other: &Self) -> bool {
@@ -25,81 +17,230 @@ impl std::cmp::PartialEq for VideoView {
     }
 }
 
+lazy_static! {
+    static ref MUTE: Arc<RwLock<bool>> = Arc::new(RwLock::new(false));
+    static ref AUTOPLAY: Arc<RwLock<bool>> = Arc::new(RwLock::new(true));
+}
+
 pub struct VideoView {
     core: WidgetCore,
-    buffer: String,
-    //imgview: ImgView,
-    //raw: DynamicImage,
-    // player: Child,
-    frame_receiver: Receiver<String>,
+    imgview: Arc<Mutex<ImgView>>,
+    file: PathBuf,
+    controller: Sender<String>,
+    paused: bool,
+    dropped: Arc<Mutex<bool>>,
+    preview_runner: Option<Box<dyn FnOnce(bool, bool)
+                                          -> HResult<()> + Send + 'static>>
 }
 
 impl VideoView {
     pub fn new_from_file(core: WidgetCore, file: &Path) -> VideoView {
-        let (tx, rx) = channel();
-        let corecl = core.clone();
-        let file = file.to_path_buf();
-        std::thread::spawn(move || {
-            let core = corecl;
-            let (xsize, ysize) = core.coordinates.size_u();
+        let (xsize, ysize) = core.coordinates.size_u();
+        let (tx_cmd, rx_cmd) = channel();
 
-            let mut player = std::process::Command::new("termplay")
-                .arg("-q")
-                .arg("-w")
-                .arg(format!("{}", xsize+1))
-                .arg("-h")
-                .arg(format!("{}", ysize*2))
-                .arg(file.to_string_lossy().to_string())
-                .stdin(Stdio::inherit())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::inherit())
-                .spawn();
+        let imgview = ImgView {
+            core: core.clone(),
+            buffer: vec![],
+            file: file.to_path_buf()
+        };
 
-            let stdout = player.unwrap().stdout.unwrap();
-            let stdout = std::io::BufReader::new(stdout);
+        let imgview = Arc::new(Mutex::new(imgview));
+        let thread_imgview = imgview.clone();
 
-            let mut frame = String::new();
-            for line in stdout.lines() {
+        let path = file.to_string_lossy().to_string();
+        let sender = core.get_sender();
+        let dropped = Arc::new(Mutex::new(false));
+        let drop = dropped.clone();
 
-                if line.as_ref().ok() == Some(String::from("\x1b[0m")).as_ref() {
-                    dbg!("line");
-                    let full_frame = frame.clone();
 
-                    let mut img = ImgView {
-                        core: core.clone(),
-                        buffer: full_frame.lines().map(|l| l.to_string()).collect()
-                    };
-                    img.draw();
+        let run_preview = Box::new(move |auto, mute| -> HResult<()> {
+            loop {
+                if *drop.lock()? == true {
+                    return Ok(());
+                }
 
-                    // tx.send(full_frame);
-                    // core.get_sender().send(crate::widget::Events::WidgetReady);
-                    frame.clear();
-                } else {
-                    if let Ok(line) = line {
-                        frame += &line;
+                let mut previewer = std::process::Command::new("preview-gen")
+                    .arg(format!("{}", (xsize)))
+                    .arg(format!("{}", (ysize+1)))
+                    .arg(format!("{}", 1))
+                    .arg(format!("{}", auto))
+                    .arg(format!("{}", mute))
+                    .arg(&path)
+                    .stdin(std::process::Stdio::piped())
+                    .stdout(std::process::Stdio::piped())
+                    .stderr(std::process::Stdio::inherit())
+                    .spawn()?;
+
+                let mut stdout = BufReader::new(previewer.stdout.take()?);
+
+
+                let mut frame = vec![];
+                let newline = String::from("\n");
+                let mut line_buf = String::new();
+
+                loop {
+                    //kill quickly after drop
+                    if let Ok(cmd) = rx_cmd.try_recv() {
+                        if cmd == "q" {
+                            previewer.kill()
+                                .map_err(|e| HError::from(e))
+                                .log();
+                            // Oh no, zombies!!
+                            previewer.wait()
+                                .map_err(|e| HError::from(e))
+                                .log();;
+
+                            return Ok(());
+                        } else {
+                            previewer.stdin.as_mut().map(|stdin| {
+                                write!(stdin, "{}", cmd)
+                                    .map_err(|e| HError::from(e))
+                                    .log();
+                                write!(stdin, "\n")
+                                    .map_err(|e| HError::from(e))
+                                    .log();;
+                                stdin.flush()
+                                    .map_err(|e| HError::from(e))
+                                    .log();;
+                            });
+                        }
+                    }
+
+
+                    // Check if preview-gen finished and break out of loop to restart
+                    if let Ok(Some(code)) = previewer.try_wait() {
+                        if code.success() {
+                            break;
+                        } else { return Ok(()); }
+                    }
+
+
+                    let _line = stdout.read_line(&mut line_buf)?;
+
+                    // Newline means frame is complete
+                    if line_buf == newline {
+                        if let Ok(mut imgview) = thread_imgview.lock() {
+                            imgview.set_image_data(frame);
+                            sender.send(crate::widget::Events::WidgetReady)
+                                .map_err(|e| HError::from(e))
+                                .log();;
+                        }
+
+                        frame = vec![];
+                        continue;
+                    }
+
+                    if line_buf != newline {
+                        frame.push(line_buf);
+                        line_buf = String::new();
                     }
                 }
             }
         });
 
+
+
         VideoView {
             core: core.clone(),
-            buffer: String::new(),
-            //imgview: imgview,
-            //raw: DynamicImage::new_rgb8(0, 0),
-            // player: source
-            frame_receiver: rx
+            imgview: imgview,
+            file: file.to_path_buf(),
+            controller: tx_cmd,
+            paused: false,
+            dropped: dropped,
+            preview_runner: Some(run_preview)
+        }
+    }
+
+    pub fn start_video(&mut self) -> HResult<()> {
+        let runner = self.preview_runner.take();
+        let dropper = self.dropped.clone();
+        let autoplay = self.autoplay();
+        let mute = self.mute();
+
+        if runner.is_some() {
+            self.clear().log();
+            std::thread::spawn(move || {
+                let sleeptime = std::time::Duration::from_millis(50);
+                let mut run = true;
+                std::thread::sleep(sleeptime);
+                dropper.lock().map(|dropper| {
+                    if *dropper == false {
+                        run = true;
+                    }
+                }).map_err(|e| HError::from(e)).log();
+                if run == true {
+                    runner.map(|runner| runner(autoplay, mute));
+                }
+            });
+        }
+        Ok(())
+    }
+
+    pub fn play(&self) -> HResult<()> {
+        Ok(self.controller.send(String::from("p"))?)
+    }
+
+    pub fn pause(&self) -> HResult<()> {
+        Ok(self.controller.send(String::from ("a"))?)
+    }
+
+    pub fn toggle_pause(&mut self) -> HResult<()> {
+        if self.paused {
+            self.play()?;
+            self.toggle_autoplay();
+            self.paused = false;
+        }
+        else {
+            self.pause()?;
+            self.toggle_autoplay();
+            self.paused = true;
+        }
+        Ok(())
+    }
+
+    pub fn quit(&self) -> HResult<()> {
+        Ok(self.controller.send(String::from("q"))?)
+    }
+
+    pub fn seek_forward(&self) -> HResult<()> {
+        Ok(self.controller.send(String::from(">"))?)
+    }
+
+    pub fn seek_backward(&self) -> HResult<()> {
+        Ok(self.controller.send(String::from("<"))?)
+    }
+
+    pub fn autoplay(&self) -> bool {
+        if let Ok(autoplay) = AUTOPLAY.read() {
+            return *autoplay;
+        }
+        return true;
+    }
+
+    pub fn mute(&self) -> bool {
+        if let Ok(mute) = MUTE.read() {
+            return *mute;
+        }
+        return false;
+    }
+
+    pub fn toggle_autoplay(&self) {
+        if let Ok(mut autoplay) = AUTOPLAY.write() {
+            *autoplay = dbg!(!*autoplay);
+        }
+    }
+
+    pub fn toggle_mute(&self) {
+        if let Ok(mut mute) = MUTE.write() {
+            *mute = dbg!(!*mute);
+            if *mute {
+                self.controller.send(String::from("m")).ok();
+            } else {
+                self.controller.send(String::from("u")).ok();
+            }
         }
     }
 }
-
-
-fn image_from_sample(sample: &gstreamer::sample::SampleRef) -> Option<DynamicImage> {
-        let buffer = sample.get_buffer()?;
-        let map = buffer.map_readable()?;
-        image::load_from_memory_with_format(&map, image::ImageFormat::PNM).ok()
-}
-
 
 impl Widget for VideoView {
     fn get_core(&self) -> HResult<&WidgetCore> {
@@ -111,24 +252,26 @@ impl Widget for VideoView {
     }
 
     fn refresh(&mut self) -> HResult<()> {
-        dbg!("refresh");
-        // let frame = self.frame_receiver.recv()?;
-
-        // self.buffer = frame;
+        self.start_video().log();
         Ok(())
     }
 
     fn get_drawlist(&self) -> HResult<String> {
-        let img = ImgView {
-            core: self.core.clone(),
-            buffer: self.buffer.lines().map(|l| l.to_string()).collect()
-        };
-        img.get_drawlist()
+        self.imgview.lock()?.get_drawlist()
     }
 }
 
 impl Drop for VideoView {
     fn drop(&mut self) {
-        //self.player.set_state(gstreamer::State::Null).into_result().unwrap();
+        dbg!("dropped");
+        self.dropped.lock().map(|mut dropper| {
+            *dropper = true;
+            self.controller.send(String::from("q")).ok();
+        }).map_err(|e| {
+            self.controller.send(String::from("q")).ok();
+            HError::from(e)
+        }).log();
+
+        self.clear().log();
     }
 }

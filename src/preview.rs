@@ -57,14 +57,10 @@ impl<W: Widget + Send + 'static> AsyncWidget<W> {
         let sender = Arc::new(Mutex::new(core.get_sender()));
         let mut widget = Async::new(move |stale|
                                     closure(stale).map_err(|e| e.into()));
-        widget.on_ready(move |mut w, stale| {
+        widget.on_ready(move |_, stale| {
             if !stale.is_stale()? {
-                w.as_mut().map(|w| {
-                    w.refresh();
-                    w.draw();
-                });
+                sender.lock().map(|s| s.send(crate::widget::Events::WidgetReady)).ok();
             }
-            sender.lock().map(|s| s.send(crate::widget::Events::WidgetReady)).ok();
             Ok(())
         }).log();
         widget.run().log();
@@ -202,7 +198,8 @@ impl PartialEq for Previewer {
 enum PreviewWidget {
     FileList(ListView<Files>),
     TextView(TextView),
-    ImgView(VideoView),
+    ImgView(ImgView),
+    VideoView(VideoView)
 }
 
 
@@ -326,52 +323,68 @@ impl Previewer {
             self.animator.set_stale().ok();
         }
 
-        self.become_preview(Ok(AsyncWidget::new(&self.core,
-                                                move |stale: &Stale| {
-            kill_proc().unwrap();
+        self.become_preview(Ok(AsyncWidget::new(
+            &self.core,
+            move |stale: &Stale|
+            {
+                kill_proc().unwrap();
 
-            if file.kind == Kind::Directory  {
-                let preview = Previewer::preview_dir(&file,
-                                                     cache,
-                                                     &core,
-                                                     &stale,
-                                                     &animator);
-                return Ok(preview?);
-            }
+                if file.kind == Kind::Directory  {
+                    let preview = Previewer::preview_dir(&file,
+                                                         cache,
+                                                         &core,
+                                                         &stale,
+                                                         &animator);
+                    return Ok(preview?);
+                }
 
-            if file.is_text() {
-                return Ok(Previewer::preview_text(&file,
-                                               &core,
-                                               &stale,
-                                               &animator)?);
-            }
-
-            // if file.path.extension() == Some(&std::ffi::OsString::from("png")) ||
-            //    file.path.extension() == Some(&std::ffi::OsString::from("jpg")) {
-            //     let imgview = ImgView::new_from_file(core.clone(), &file.path);
-            //     return Ok(PreviewWidget::ImgView(imgview))
-            //    }
-
-            if file.path.extension() == Some(&std::ffi::OsString::from("webm")) {
-                let videoview = VideoView::new_from_file(core.clone(), &file.path);
-                return Ok(PreviewWidget::ImgView(videoview))
-            }
-
-
-
-            let preview = Previewer::preview_external(&file,
+                if file.is_text() {
+                    return Ok(Previewer::preview_text(&file,
                                                       &core,
                                                       &stale,
-                                                      &animator);
-            if preview.is_ok() { return Ok(preview?); }
-            else {
-                let mut blank = TextView::new_blank(&core);
-                blank.set_coordinates(&coordinates).log();
-                blank.refresh().log();
-                blank.animate_slide_up(Some(&animator)).log();
-                return Ok(PreviewWidget::TextView(blank))
-            }
-        })))
+                                                      &animator)?);
+                }
+
+                if let Some(mime) = dbg!(file.get_mime()) {
+                    match dbg!(mime.type_().as_str()) {
+                        "video" => {
+                            let videoview = VideoView::new_from_file(core.clone(),
+                                                                     &file.path);
+                            return Ok(PreviewWidget::VideoView(videoview));
+                        }
+                        "image" => {
+                            let imgview = ImgView::new_from_file(core.clone(),
+                                                                 &file.path())?;
+                            return Ok(PreviewWidget::ImgView(imgview));
+                        }
+                        _ => {}
+                    }
+                }
+
+
+
+                // if file.path.extension() == Some(&std::ffi::OsString::from("png")) ||
+                //    file.path.extension() == Some(&std::ffi::OsString::from("jpg")) {
+                //     let imgview = ImgView::new_from_file(core.clone(), &file.path);
+                //     return Ok(PreviewWidget::ImgView(imgview))
+                //    }
+
+
+
+
+                let preview = Previewer::preview_external(&file,
+                                                          &core,
+                                                          &stale,
+                                                          &animator);
+                if preview.is_ok() { return Ok(preview?); }
+                else {
+                    let mut blank = TextView::new_blank(&core);
+                    blank.set_coordinates(&coordinates).log();
+                    blank.refresh().log();
+                    blank.animate_slide_up(Some(&animator)).log();
+                    return Ok(PreviewWidget::TextView(blank))
+                }
+            })))
     }
 
     pub fn reload(&mut self) {
@@ -483,6 +496,49 @@ impl Previewer {
         HError::preview_failed(file)
     }
 
+    pub fn media_seek_forward(&self) -> HResult<()> {
+        self.widget.widget().map(|widget| {
+            match widget {
+                PreviewWidget::VideoView(videoview) => {
+                    videoview.seek_forward()
+                }
+                _ => {Ok(())}
+            }
+        })?
+    }
+
+    pub fn media_seek_backward(&self) -> HResult<()> {
+        self.widget.widget().map(|widget| {
+            match widget {
+                PreviewWidget::VideoView(videoview) => {
+                    videoview.seek_backward()
+                }
+                _ => {Ok(())}
+            }
+        })?
+    }
+
+    pub fn media_toggle_pause(&mut self) -> HResult<()> {
+        self.widget.widget_mut().map(|widget| {
+            match widget {
+                PreviewWidget::VideoView(ref mut videoview) => {
+                    videoview.toggle_pause()
+                }
+                _ => {Ok(())}
+            }
+        })?
+    }
+
+    pub fn media_toggle_mute(&mut self) -> HResult<()> {
+        self.widget.widget_mut().map(|widget| {
+            match widget {
+                PreviewWidget::VideoView(ref mut videoview) => {
+                    videoview.toggle_mute()
+                }
+                _ => {}
+            }
+        })
+    }
 }
 
 
@@ -522,14 +578,16 @@ impl Widget for PreviewWidget {
         match self {
             PreviewWidget::FileList(widget) => widget.get_core(),
             PreviewWidget::TextView(widget) => widget.get_core(),
-            PreviewWidget::ImgView(widget) => widget.get_core()
+            PreviewWidget::ImgView(widget) => widget.get_core(),
+            PreviewWidget::VideoView(widget) => widget.get_core()
         }
     }
     fn get_core_mut(&mut self) -> HResult<&mut WidgetCore> {
         match self {
             PreviewWidget::FileList(widget) => widget.get_core_mut(),
             PreviewWidget::TextView(widget) => widget.get_core_mut(),
-            PreviewWidget::ImgView(widget) => widget.get_core_mut()
+            PreviewWidget::ImgView(widget) => widget.get_core_mut(),
+            PreviewWidget::VideoView(widget) => widget.get_core_mut()
         }
     }
     fn set_coordinates(&mut self, coordinates: &Coordinates) -> HResult<()> {
@@ -537,20 +595,23 @@ impl Widget for PreviewWidget {
             PreviewWidget::FileList(widget) => widget.set_coordinates(coordinates),
             PreviewWidget::TextView(widget) => widget.set_coordinates(coordinates),
             PreviewWidget::ImgView(widget) => widget.set_coordinates(coordinates),
+            PreviewWidget::VideoView(widget) => widget.set_coordinates(coordinates),
         }
     }
     fn refresh(&mut self) -> HResult<()> {
         match self {
             PreviewWidget::FileList(widget) => widget.refresh(),
             PreviewWidget::TextView(widget) => widget.refresh(),
-            PreviewWidget::ImgView(widget) => widget.refresh()
+            PreviewWidget::ImgView(widget) => widget.refresh(),
+            PreviewWidget::VideoView(widget) => widget.refresh()
         }
     }
     fn get_drawlist(&self) -> HResult<String> {
         match self {
             PreviewWidget::FileList(widget) => widget.get_drawlist(),
             PreviewWidget::TextView(widget) => widget.get_drawlist(),
-            PreviewWidget::ImgView(widget) => widget.get_drawlist()
+            PreviewWidget::ImgView(widget) => widget.get_drawlist(),
+            PreviewWidget::VideoView(widget) => widget.get_drawlist()
         }
     }
 }
