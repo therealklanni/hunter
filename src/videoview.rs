@@ -51,6 +51,7 @@ impl VideoView {
         let sender = core.get_sender();
         let dropped = Arc::new(Mutex::new(false));
         let drop = dropped.clone();
+        let rx_cmd = Arc::new(Mutex::new(rx_cmd));
 
 
         let run_preview = Box::new(move |auto, mute| -> HResult<()> {
@@ -72,43 +73,40 @@ impl VideoView {
                     .spawn()?;
 
                 let mut stdout = BufReader::new(previewer.stdout.take()?);
+                let mut stdin = previewer.stdin.take()?;
 
+                let previewer = Arc::new(Mutex::new(previewer));
 
                 let mut frame = vec![];
                 let newline = String::from("\n");
                 let mut line_buf = String::new();
 
-                loop {
-                    //kill quickly after drop
-                    if let Ok(cmd) = rx_cmd.try_recv() {
+                let tpreviewer = previewer.clone();
+                let rx_cmd = rx_cmd.clone();
+
+                std::thread::spawn(move || -> HResult<()> {
+                    for cmd in rx_cmd.lock()?.iter() {
+                        //kill quickly after drop
                         if cmd == "q" {
-                            previewer.kill()
-                                .map_err(|e| HError::from(e))
-                                .log();
+                            tpreviewer.lock()?.kill()?;
+
                             // Oh no, zombies!!
-                            previewer.wait()
-                                .map_err(|e| HError::from(e))
-                                .log();;
+                            tpreviewer.lock()?.wait()?;
+
 
                             return Ok(());
                         } else {
-                            previewer.stdin.as_mut().map(|stdin| {
-                                write!(stdin, "{}", cmd)
-                                    .map_err(|e| HError::from(e))
-                                    .log();
-                                write!(stdin, "\n")
-                                    .map_err(|e| HError::from(e))
-                                    .log();;
-                                stdin.flush()
-                                    .map_err(|e| HError::from(e))
-                                    .log();;
-                            });
+                            write!(stdin, "{}", cmd)?;
+                            write!(stdin, "\n")?;
+                            stdin.flush()?;
                         }
                     }
+                    Ok(())
+                });
 
-
+                loop {
                     // Check if preview-gen finished and break out of loop to restart
-                    if let Ok(Some(code)) = previewer.try_wait() {
+                    if let Ok(Some(code)) = previewer.lock().unwrap().try_wait() {
                         if code.success() {
                             break;
                         } else { return Ok(()); }
@@ -116,6 +114,7 @@ impl VideoView {
 
 
                     let _line = stdout.read_line(&mut line_buf)?;
+
 
                     // Newline means frame is complete
                     if line_buf == newline {
@@ -266,9 +265,9 @@ impl Drop for VideoView {
         dbg!("dropped");
         self.dropped.lock().map(|mut dropper| {
             *dropper = true;
-            self.controller.send(String::from("q")).ok();
+            self.controller.send(String::from("q")).unwrap();
         }).map_err(|e| {
-            self.controller.send(String::from("q")).ok();
+            self.controller.send(String::from("q")).unwrap();
             HError::from(e)
         }).log();
 

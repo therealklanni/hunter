@@ -85,12 +85,6 @@ impl<W: Widget + Send + 'static> AsyncWidget<W> {
         });
 
         widget.on_ready(move |mut w, stale| {
-            if !stale.is_stale()? {
-                w.as_mut().map(|w| {
-                    w.refresh();
-                    w.draw();
-                });
-            }
             sender.lock().map(|s| s.send(crate::widget::Events::WidgetReady)).ok();
             Ok(())
         }).log();
